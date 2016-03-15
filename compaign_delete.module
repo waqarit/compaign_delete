@@ -1,0 +1,168 @@
+<?php
+/**
+ * Implements hook_menu
+ */
+function compaign_delete_menu() {
+  $items = array();
+  $items['admin/structure/Compaign'] = array(
+    'title' => 'Delete Compaign',
+    'description' => 'Delete Compaign with childs through Batch',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('compaign_delete_form'),
+    'access arguments' => array('administer content'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+  return $items;
+}
+
+/**
+ * Implements hook_form
+ */
+function compaign_delete_form($form, &$form_state) {
+	
+	$form = array();
+	
+	$vid = taxonomy_get_tree(6);
+	$options = array();
+	foreach ($vid as $term){
+		$options[$term->tid] = t($term->name);
+	}
+	
+	$form['terms_pack'] = array(
+		'#type' => 'select',
+		'#title' => t('Package'),
+		'#options' => array( '0' => t('-None-')) + $options,
+		//'#attributes' => array('class' => array('term')),
+		'#ajax' => array(
+			'callback' => 'compaign_delete_ajax_callback',
+			'wrapper' => 'compaign_replace',
+			'event' => 'change',
+		),
+	);
+	$tid = isset($form_state['values']['terms_pack'])? $form_state['values']['terms_pack'] : 0;
+	
+	
+	$form['compaign_pack'] = array(
+        '#type' => 'select',
+        '#title' => 'Compagins',
+        '#prefix' => '<div id="compaign_replace">',
+        '#suffix' => '</div>',
+		//'#attributes' => array('class' => array('chld')),
+        '#options' => array( '0' => t('-None-')) + number_of_compaigns($tid),
+    );
+	$form['submit'] = array(
+		'#type' => 'submit',
+		'#value' => 'Delete',
+	);
+	
+    return $form;
+}
+function number_of_compaigns($tid=''){
+	$options2 = array();
+	if($tid > 0){
+		$query = db_select('node', 'n');
+			$query->fields('n', array('nid','title'));
+			$query->innerjoin('field_data_field_compaign_package', 'comp_package', 'comp_package.entity_id=n.nid');
+			$query->condition('comp_package.field_compaign_package_tid', $tid);
+			$query->condition('comp_package.deleted', 0);
+		$compaign = $query->execute();
+		foreach($compaign as $compai){
+			$options2[$compai->nid] = $compai->title;
+		}
+	
+	//$options2 = array('Visible' => '-- Select --') + $option2; // use + for merging array without reindexing
+	return $options2;
+	} else {
+		return array();
+	}
+ }
+
+/**
+ * Selects just the second dropdown to be returned for re-rendering
+ */
+function compaign_delete_ajax_callback($form, &$form_state) {
+    return $form['compaign_pack'];
+}
+
+/**
+ * Perform validation on form fields
+ */
+function compaign_delete_form_validate($form, &$form_state){
+	if($form_state['values']['terms_pack'] == 0){
+		form_set_error('terms_pack', t('Please an option in Package field.'));
+	}
+	if($form_state['values']['compaign_pack'] == 0){
+		form_set_error('compaign_pack', t('Please an option in Compagin field.'));
+	}
+}
+
+/**
+ * Implements hook_form_submit
+ */
+function compaign_delete_form_submit($form, &$form_state) {
+	
+  // get the submitted value
+  $cid = $form_state['values']['compaign_pack'];
+  $query = db_select('node', 'n');
+			$query->fields('n', array('nid'));
+			$query->innerjoin('field_data_field_parent', 'parent', 'parent.entity_id=n.nid');
+			$query->condition('parent.field_parent_target_id', $cid);
+			$query->condition('parent.deleted', 0);
+		$nids = $query->execute()->fetchCol();
+		array_unshift($nids, $cid);  // add element to start of array and reindex the whole array
+		//array_push($nids, $cid);  // add element to end of array and reindex the whole array
+		//dsm($nids);
+		// Create operations array.
+	$operations = array();
+		foreach($nids as $nid){
+			//$options2[$nid->nid] = $nid->title;
+			$operations[] = array('compaign_delete_nodes',array($nid));
+		}
+
+
+  // Start Batch of node creation.
+  $batch = array(
+    'title' => t('Deleting Nodes Finally.'),
+    'operations' => $operations,
+    'finished' => 'compaign_delete_batch_finished',
+    'init_message' => t('Node Deletion Is Starting.'),
+    'progress_message' => t('Processed @current out of @total.'),
+    'error_message' => t('Node Deletion has encountered an error.'),    
+  );
+  // Set the batch operation.
+  batch_set($batch);
+  unset ($form_state['storage']);
+  batch_process('admin/structure/Compaign'); // page to return to after complete
+  
+}
+/**
+ * Helper function to create nodes in batch process.
+ */
+ function compaign_delete_nodes($nid, &$context){
+	 $node = db_query("SELECT `title`, `type` FROM {node} WHERE nid = :nid", array(':nid' => $nid))->fetchObject();
+	node_delete($nid);
+	$context['results'][] = "<b>Deleted Node </b> $node->title => $nid <b>Type: </b> $node->type .";
+ }
+/**
+ * Callback : Called when batch process is finished.
+ */
+function compaign_delete_batch_finished($success, $results, $operations) {
+  if($success) {
+	watchdog(t('Delete Compagin'), 'Nodes Deleted Successfully Through Batch using %operation', array('%operations' => print_r($operations, TRUE)), WATCHDOG_INFO);
+    $message = t('<i>Total @count items successfully Deleted:</i>', array('@count' => count($results)));
+	$message .= theme('item_list', array('items' => $results));
+    drupal_set_message($message);
+
+	//drupal_set_message('Nodes Created Successfully.');
+  }
+  else {
+    $error_operation = reset($operations);
+    $message = t('An error occurred while processing %error_operation with arguments: @arguments', array(
+      '%error_operation' => $error_operation[0],
+      '@arguments' => print_r($error_operation[1], TRUE)
+    ));
+	watchdog(t('Delete Compagin'), 'An error occurred while processing %error_operation with arguments: @arguments', array('%error_operation' => $error_operation[0], '@arguments' => print_r($error_operation[1], TRUE)), WATCHDOG_ERROR);
+    
+    drupal_set_message($message, 'error');
+  }
+}

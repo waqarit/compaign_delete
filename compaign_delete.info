@@ -1,0 +1,3 @@
+name = Delete Compaign
+description = Module to delete Compaign Nodes with all it's child through Batch
+core = 7.x
